@@ -246,6 +246,12 @@ function BatchResults() {
               {r.student_answer}
             </div>
 
+            {/* Model answer */}
+            <div style={s.label}>Model Answer</div>
+            <div style={{ ...s.value, marginBottom: '12px' }}>
+              {r.model_answer}
+            </div>
+
             {/* Feedback */}
             <div style={s.label}>Feedback</div>
             <div

@@ -1,14 +1,23 @@
 # ──────────────────────────────────────────────
-# Ollama Service
-# Uses local Mistral model to generate feedback.
-# Replaces Claude API — runs fully offline.
+# Feedback Service (Ollama + OpenAI Switch)
 # ──────────────────────────────────────────────
 
 import httpx
+import os
+from openai import OpenAI
+
+# ── CONFIG ───────────────────────────────────
 
 OLLAMA_URL   = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "mistral:latest"
+OLLAMA_MODEL = "mistral:7b"
 
+# OpenAI client (used only if selected)
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+# ──────────────────────────────────────────────
+# MAIN FUNCTION
+# ──────────────────────────────────────────────
 
 async def generate_feedback(
     student_answer: str,
@@ -16,11 +25,13 @@ async def generate_feedback(
     score: int,
     similarity: float,
     max_marks: int,
-    nli_result: str
+    nli_result: str,
+    feedback_mode: str = "ollama"
 ) -> str:
     """
-    Sends student answer + evaluation results to local Mistral via Ollama.
-    Returns a short feedback string.
+    Generates feedback using:
+    - Ollama (local model)
+    - OpenAI (cloud model)
     """
 
     prompt = f"""You are an expert teacher evaluating a student's answer.
@@ -46,6 +57,26 @@ Write short, constructive feedback (3-4 sentences) for the student.
 Return ONLY the feedback text. No headings, no bullet points, no extra explanation.
 """.strip()
 
+    # ──────────────────────────────────────────
+    # OPTION 1: OPENAI (FAST DEMO MODE)
+    # ──────────────────────────────────────────
+    if feedback_mode == "openai":
+        try:
+            response = openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=150
+            )
+            return response.choices[0].message.content.strip()
+
+        except Exception as e:
+            return f"OpenAI feedback failed: {str(e)}"
+
+    # ──────────────────────────────────────────
+    # OPTION 2: OLLAMA (DEFAULT LOCAL MODE)
+    # ──────────────────────────────────────────
     payload = {
         "model": OLLAMA_MODEL,
         "prompt": prompt,
