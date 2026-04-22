@@ -8,11 +8,13 @@ from typing import Optional
 class EvaluateRequest(BaseModel):
     """
     Sent by frontend when submitting an answer sheet.
-    'answer_text' is used when text is passed directly (e.g., from OCR mock).
+    'answer_text' is used when text is passed directly.
     """
     answer_text: Optional[str] = None
     question: Optional[str] = None
-    max_marks: Optional[int] = 10
+
+    # UPDATED: allow float-compatible marks if needed in future
+    max_marks: Optional[float] = 10
 
 
 # ──────────────────────────────────────────────
@@ -25,12 +27,20 @@ class OCRResult(BaseModel):
 
 
 class NLPResult(BaseModel):
-    """Matches NLP module output contract: { 'score': 7, 'similarity': 0.78 }"""
-    score: int
+    """
+    UPDATED:
+    changed score from int -> float
+    so partial scores like 1.5 are not lost
+    """
+    score: float
     similarity: float
 
 
 class EvaluateResponse(BaseModel):
-    """Final output contract: { 'marks': 7, 'feedback': '...' }"""
-    marks: int
+    """
+    UPDATED:
+    changed marks from int -> float
+    so teacher-style partial marks like 1.5 / 2 are preserved
+    """
+    marks: float
     feedback: str
