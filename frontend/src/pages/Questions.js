@@ -37,16 +37,17 @@ function Questions() {
       return;
     }
     setSubmitting(true);
+    const currentNum = parseInt(questionNumber); // ← parse here
     try {
       await axios.post('http://127.0.0.1:8000/questions/', {
-        question_number: parseInt(questionNumber),
+        question_number: currentNum,
         subject,
         question_text: questionText,
         model_answer: modelAnswer,
         max_marks: parseInt(maxMarks),
       });
-      setSuccess(`Q${questionNumber} saved successfully.`);
-      setQuestionNumber(questionNumber + 1);
+      setSuccess(`Q${currentNum} saved successfully.`);
+      setQuestionNumber(currentNum + 1); // ← now this is number + 1, not "1" + 1
       setQuestionText('');
       setModelAnswer('');
       setMaxMarks(10);
@@ -280,7 +281,7 @@ function Questions() {
                   color: '#555',
                   marginTop: '6px',
                   marginBottom: '6px',
-                  lineHeight: '1.5'
+                  lineHeight: '1.5',
                 }}
               >
                 <strong>Model Answer:</strong> {q.model_answer}

@@ -9,7 +9,7 @@ from openai import OpenAI
 # ── CONFIG ───────────────────────────────────
 
 OLLAMA_URL   = "http://localhost:11434/api/generate"
-OLLAMA_MODEL = "mistral:7b"
+OLLAMA_MODEL = "mistral:latest"
 
 # OpenAI client (used only if selected)
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
