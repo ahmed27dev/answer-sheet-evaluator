@@ -1,11 +1,11 @@
-# venv/
-# __pycache__/
-# *.pyc
-# .env
-# node_modules/
-# *.log
-# .DS_Store
-# *.pt
-# *.bin
-# *.model
-# .cache/
+venv/
+__pycache__/
+*.pyc
+.env
+node_modules/
+*.log
+.DS_Store
+*.pt
+*.bin
+*.model
+.cache/

@@ -9,6 +9,7 @@ def extract_text_from_image(image_path: str) -> dict:
     Takes an image file path, sends it to GPT-4o-mini,
     returns extracted handwritten text while preserving
     question numbering and line structure.
+    Also extracts PRN number if present on the sheet.
     """
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -41,7 +42,9 @@ def extract_text_from_image(image_path: str) -> dict:
                             "and subparts like a), b), i), ii). "
                             "Do not merge different answers together. "
                             "Do not summarize or explain anything. "
-                            "Return only the extracted text."
+                            "If you find a PRN number, roll number, or student ID on the sheet, "
+                            "output it on the very first line in this exact format: PRN: <number> "
+                            "Then return the rest of the extracted text below it."
                         )
                     },
                     {
@@ -58,11 +61,18 @@ def extract_text_from_image(image_path: str) -> dict:
 
     text = response.choices[0].message.content or ""
 
+    # Extract PRN from first line if present
+    prn = None
+    lines = text.strip().splitlines()
+    if lines and re.match(r"^PRN\s*:\s*\S+", lines[0], re.IGNORECASE):
+        prn = re.sub(r"^PRN\s*:\s*", "", lines[0], flags=re.IGNORECASE).strip()
+        text = "\n".join(lines[1:]).strip()
+
     # preserve line structure instead of flattening everything
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
 
-    return {"text": text}
+    return {"text": text, "prn": prn}
 
 
 def extract_text_from_string(text: str) -> dict:

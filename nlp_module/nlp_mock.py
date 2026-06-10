@@ -5,7 +5,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 # =========================================================
-# LOAD MODELS (loaded once when module is imported)
+# LOAD MODELS
 # =========================================================
 print("Loading NLP models...")
 
@@ -20,7 +20,6 @@ nli_model.eval()
 labels = ["CONTRADICTION", "NEUTRAL", "ENTAILMENT"]
 
 print("NLP models loaded successfully.")
-
 
 # =========================================================
 # HELPERS
@@ -40,8 +39,8 @@ def get_similarity(a: str, b: str) -> float:
 
 def check_nli(student_answer: str, model_answer: str):
     inputs = tokenizer(
-        model_answer,
         student_answer,
+        model_answer,
         return_tensors="pt",
         truncation=True,
         padding=True
@@ -53,59 +52,51 @@ def check_nli(student_answer: str, model_answer: str):
         probs = torch.softmax(logits, dim=1)[0]
 
     pred_id = torch.argmax(probs).item()
-    label = labels[pred_id]
-    confidence = float(probs[pred_id].item())
-
-    return label, confidence
+    return labels[pred_id], float(probs[pred_id].item())
 
 
 def split_into_sentences(text: str):
-    """
-    General sentence splitter for any subject.
-    Splits on newline and punctuation.
-    """
     parts = re.split(r"[\n.!?]+", text)
-
-    sentences = []
-    for part in parts:
-        part = clean_text(part)
-        if len(part.split()) >= 3:
-            sentences.append(part)
-
-    return sentences
-
+    return [clean_text(p) for p in parts if len(p.split()) >= 3]
 
 # =========================================================
-# TEACHER-LIKE LONG ANSWER EVALUATOR
+# CONTRADICTION DETECTION (IMPROVED)
 # =========================================================
-def evaluate_long_answer(student_answer: str, model_answer: str, max_marks: int) -> dict:
-    """
-    UPDATED:
-    - Uses sentence-wise semantic matching
-    - Uses softer scoring thresholds
-    - Uses coverage-based boosting
-    - Returns decimal marks like 1.5 / 2 when needed
-    """
+def detect_factual_contradictions(student_sentences, model_points):
+    contradiction_count = 0
+    contradiction_penalty = 0.0
+
+    for s in student_sentences:
+        for m in model_points:
+            sim = get_similarity(s, m)
+
+            if sim >= 0.35:
+                label, conf = check_nli(s, m)
+
+                if label == "CONTRADICTION" and conf >= 0.60:
+                    contradiction_count += 1
+                    contradiction_penalty += (0.25 + 0.2 * (sim - 0.35))
+
+    contradiction_penalty = min(contradiction_penalty, 0.7)
+
+    return contradiction_count, contradiction_penalty
+
+# =========================================================
+# LONG ANSWER EVALUATOR (FINAL VERSION)
+# =========================================================
+def evaluate_long_answer(student_answer, model_answer, max_marks):
 
     student_sentences = split_into_sentences(student_answer)
     model_points = split_into_sentences(model_answer)
 
     if not student_sentences:
-        return {
-            "marks": 0,
-            "feedback": "No answer was provided.",
-            "similarity": 0.0,
-            "nli_result": "NEUTRAL"
-        }
+        return {"marks": 0, "feedback": "No answer provided.", "similarity": 0.0, "nli_result": "NEUTRAL"}
 
-    if not model_points:
-        model_points = [clean_text(model_answer)]
-
-    total_score = 0.0
-    total_similarity = 0.0
+    total_score = 0
+    total_similarity = 0
 
     for point in model_points:
-        best_sim = 0.0
+        best_sim = 0
         best_line = ""
 
         for line in student_sentences:
@@ -115,170 +106,115 @@ def evaluate_long_answer(student_answer: str, model_answer: str, max_marks: int)
                 best_line = line
 
         total_similarity += best_sim
+        nli, _ = check_nli(best_line, point)
 
-        nli_result, _ = check_nli(best_line, point)
+        if nli == "ENTAILMENT":
+            score = 1 if best_sim >= 0.65 else 0.75
+        elif nli == "NEUTRAL":
+            score = 0.75 if best_sim >= 0.6 else 0.5 if best_sim >= 0.4 else 0.25
+        else:
+            score = 0
 
-        # -------------------------------------------------
-        # UPDATED: Teacher-like softer scoring thresholds
-        # -------------------------------------------------
-        if nli_result == "ENTAILMENT":
-            if best_sim >= 0.65:   # lowered from 0.75
-                score = 1.0
-            else:
-                score = 0.75
-
-        elif nli_result == "NEUTRAL":
-            if best_sim >= 0.60:
-                score = 0.75
-            elif best_sim >= 0.40:
-                score = 0.5
-            elif best_sim >= 0.25:
-                score = 0.25
-            else:
-                score = 0.0
-
-        else:  # CONTRADICTION
-            # UPDATED: softened contradiction penalty
-            if best_sim >= 0.65:
-                score = 0.5
-            else:
-                score = 0.0
- 
         total_score += score
 
-    # -------------------------------------------------
-    # UPDATED: coverage-based boost instead of strict average
-    # This helps teacher-like marking for OCR/noisy answers
-    # -------------------------------------------------
     coverage = total_score / max(len(model_points), 1)
     avg_similarity = total_similarity / max(len(model_points), 1)
-    student_full = clean_text(student_answer)
-    model_full = clean_text(model_answer)
-    # NEW: general structure bonus for well-organized theory answers
-    structure_bonus = 0.0
 
-# (a), (b), (c)
-    if re.search(r"\(\s*[a-z]\s*\)", student_answer.lower()):
-        structure_bonus += 0.05
+    # =========================================================
+    # FIX 1: HARD COVERAGE CAPS
+    # =========================================================
+    final_score = coverage
 
-# 1), 2), 3) or i), ii)
-    if re.search(r"\b\d+\)", student_answer) or re.search(r"\b(i|ii|iii|iv)\b", student_answer.lower()):
-        structure_bonus += 0.10
-    
-    model_words = [w for w in model_full.split() if len(w) > 4]
-    overlap_ratio = 0.0
+    if coverage < 0.4:
+        final_score = min(final_score, 0.5)
+    elif coverage < 0.6:
+        final_score = min(final_score, 0.7)
+    elif coverage < 0.8:
+        final_score = min(final_score, 0.85)
 
-    if model_words:
-        overlap_ratio = sum(1 for w in set(model_words) if w in student_full) / len(set(model_words))
-    if coverage >= 0.65 or avg_similarity >= 0.75 or overlap_ratio >= 0.55:
-        final_score = 1.0
-    elif coverage >= 0.6:
-        final_score = max(coverage, 0.8)
-    elif coverage >= 0.4:
-        final_score = max(coverage, 0.6)
-    else:
-        final_score = coverage
-    final_score = min(final_score + structure_bonus, 1.0)
-        
+    # =========================================================
+    # FIX 5: MISSING POINT PENALTY
+    # =========================================================
+    missing_points = len(model_points) - round(coverage * len(model_points))
+    if missing_points >= 2:
+        final_score *= 0.8
 
-    avg_similarity = total_similarity / max(len(model_points), 1)
-    # -------------------------------------------------
-# NEW: minor deduction for weak expression
-# -------------------------------------------------
-    is_descriptive = len(model_answer.split()) > 40
-    if final_score == 1.0 and is_descriptive:
-        if avg_similarity < 0.85:
-            final_score = 0.8   # reduces to ~1.6/2
+    # =========================================================
+    # FIX 2: STRONG CONTRADICTION PENALTY
+    # =========================================================
+    contradiction_count, contradiction_penalty = detect_factual_contradictions(
+        student_sentences, model_points
+    )
 
-    # -------------------------------------------------
-    # UPDATED: allow decimal marks like 1.5 / 2
-    # -------------------------------------------------
+    if contradiction_count > 0:
+        final_score *= (1 - contradiction_penalty)
+
+    if contradiction_count >= 2:
+        final_score = min(final_score, 0.4)
+    elif contradiction_count == 1:
+        final_score = min(final_score, 0.65)
+
+    # =========================================================
+    # FIX 3: HIGH SIMILARITY BUT WRONG
+    # =========================================================
+    if avg_similarity > 0.7 and contradiction_count > 0:
+        final_score *= 0.7
+
+    final_score = max(0.0, min(final_score, 1.0))
     marks = round(final_score * max_marks, 1)
 
+    # Feedback
     if final_score >= 0.8:
-        feedback = "Good answer. Most expected points are covered correctly."
-        overall_nli = "ENTAILMENT"
+        feedback = "Good answer."
+        nli_result = "ENTAILMENT"
     elif final_score >= 0.4:
-        feedback = "Partial answer. Some expected points are covered."
-        overall_nli = "NEUTRAL"
+        feedback = "Partial answer."
+        nli_result = "NEUTRAL"
     else:
-        feedback = "Incorrect or incomplete answer."
-        overall_nli = "CONTRADICTION"
+        feedback = "Incorrect answer."
+        nli_result = "CONTRADICTION"
 
     return {
         "marks": marks,
         "feedback": feedback,
         "similarity": round(avg_similarity, 4),
-        "nli_result": overall_nli
+        "nli_result": nli_result,
+        "contradiction_count": contradiction_count
     }
 
-
 # =========================================================
-# MAIN FUNCTION — called by backend/routers/evaluate.py
+# MAIN FUNCTION
 # =========================================================
-def evaluate_answer(student_answer: str, model_answer: str, max_marks: int) -> dict:
-    """
-    Evaluates a student answer against a model answer.
+def evaluate_answer(student_answer, model_answer, max_marks):
 
-    Uses:
-    - NLI + similarity for short answers
-    - sentence-wise semantic scoring for long answers
-    """
+    if not student_answer.strip():
+        return {"marks": 0, "feedback": "No answer.", "similarity": 0.0, "nli_result": "NEUTRAL"}
 
-    if not student_answer or not student_answer.strip():
-        return {
-            "marks": 0,
-            "feedback": "No answer was provided.",
-            "similarity": 0.0,
-            "nli_result": "NEUTRAL"
-        }
-
-    # -------------------------------------------------
-    # Long answer mode
-    # -------------------------------------------------
     if len(student_answer.split()) > 40 or len(model_answer.split()) > 40:
         return evaluate_long_answer(student_answer, model_answer, max_marks)
 
-    # -------------------------------------------------
-    # Short answer mode
-    # -------------------------------------------------
     student_clean = clean_text(student_answer)
     model_clean = clean_text(model_answer)
 
     similarity = get_similarity(student_clean, model_clean)
-    nli_result, _ = check_nli(student_answer, model_answer)
+    nli, _ = check_nli(student_answer, model_answer)
 
-    # -------------------------------------------------
-    # UPDATED: soften contradiction if similarity is decent
-    # -------------------------------------------------
-    if similarity > 0.65 and nli_result == "CONTRADICTION":
-        nli_result = "NEUTRAL"
-
-    # -------------------------------------------------
-    # UPDATED: teacher-like short-answer scoring
-    # -------------------------------------------------
-    if nli_result == "ENTAILMENT":
-        final_score = 0.88 + (0.12 * similarity)
-        feedback = "Good answer. The response is correct."
-    elif nli_result == "NEUTRAL":
-        final_score = 0.55 + (0.30 * similarity)
-        feedback = "Partial answer."
+    # =========================================================
+    # FIX 4: STRICT SHORT ANSWER
+    # =========================================================
+    if nli == "ENTAILMENT":
+        final_score = 0.85 + 0.15 * similarity
+    elif nli == "NEUTRAL":
+        final_score = 0.4 + 0.25 * similarity
     else:
-        final_score = 0.20 + (0.20 * similarity)
-        feedback = "Incorrect answer."
+        final_score = 0.1 + 0.15 * similarity
 
-    final_score = min(float(final_score), 1.0)
-
-    # NOTE:
-    # Short answers still return rounded integer marks.
-    # If you also want decimal marks for short answers,
-    # change this line to:
-    # marks = round(final_score * max_marks, 1)
-    marks = min(round(final_score * max_marks), max_marks)
+    final_score = min(final_score, 1.0)
+    marks = round(final_score * max_marks, 1)
 
     return {
         "marks": marks,
-        "feedback": feedback,
+        "feedback": "Evaluated answer.",
         "similarity": round(similarity, 4),
-        "nli_result": nli_result
+        "nli_result": nli
     }
